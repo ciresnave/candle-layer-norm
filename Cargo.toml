@@ -1,12 +1,12 @@
 [package]
 name = "candle-layer-norm"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 license = "bsd-3"
 description = "Layer Norm layer for the candle ML framework."
 
 [dependencies]
-candle = { version = "*", package = "candle-core", features = ["cuda"] }
+candle = { git = "https://github.com/huggingface/candle", rev = "db08cc0a5a786e00f873c35ced7db51fd7d7083a", package = "candle-core", features = ["cuda"] }
 half = { version = "2.3.1", features = ["num-traits"] }
 
 [build-dependencies]
