@@ -106,6 +106,12 @@ fn main() -> Result<()> {
                         .arg("-allow-unsupported-compiler")
                         .args(["-ccbin", ccbin_path]);
                 }
+                // Add /bigobj flag for MSVC on Windows to handle large object files
+                // This fixes error C1128: number of sections exceeded object file format limit
+                #[cfg(target_os = "windows")]
+                {
+                    command.args(["-Xcompiler", "/bigobj"]);
+                }
                 command.arg(cu_file);
                 let output = command
                     .spawn()
