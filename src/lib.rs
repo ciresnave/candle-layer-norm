@@ -2,8 +2,7 @@ mod ffi;
 
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
-use candle::cuda_backend::cudarc::driver::DevicePtr;
-use candle::cuda_backend::WrapErr;
+use candle::cuda_backend::cudarc::driver::{DevicePtr, DeviceSlice};
 use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use half::{bf16, f16};
 use std::ptr;
@@ -53,12 +52,8 @@ impl LayerNorm {
         };
 
         // Get cuda slices for all tensors
-        let x = x.as_cuda_slice::<T>()?;
-        let g = g.as_cuda_slice::<T>()?;
-
-        // Get cuda views for all tensors
-        let x = x.slice(x_l.start_offset()..);
-        let g = g.slice(g_l.start_offset()..);
+        let x_slice = x.as_cuda_slice::<T>()?;
+        let g_slice = g.as_cuda_slice::<T>()?;
 
         // Input matrix layout
         let rows = x_l.dims()[0];
@@ -104,8 +99,7 @@ impl LayerNorm {
                 _ => candle::bail!("gamma must be a cuda tensor"),
             };
 
-            let b = b.as_cuda_slice::<T>()?;
-            let b = b.slice(b_l.start_offset()..);
+            let b_slice = b.as_cuda_slice::<T>()?;
 
             let b_stride = b_l.stride();
             let b_rank = b_stride.len();
@@ -113,7 +107,8 @@ impl LayerNorm {
             if b_stride[b_rank - 1] != 1 {
                 candle::bail!("the last dim of b must be contiguous {b_stride:?}")
             }
-            *b.device_ptr() as *const core::ffi::c_void
+            let (b_ptr, _sync) = b_slice.device_ptr(b_slice.stream());
+            b_ptr as *const core::ffi::c_void
         } else {
             ptr::null() as *const std::ffi::c_void
         };
@@ -126,8 +121,7 @@ impl LayerNorm {
                 candle::bail!("shape mismatch x {:?} and r {:?}", x_l.shape(), r_l.shape());
             }
 
-            let r = r.as_cuda_slice::<T>()?;
-            let r = r.slice(r_l.start_offset()..);
+            let r_slice = r.as_cuda_slice::<T>()?;
 
             let r_stride = r_l.stride();
             let r_rank = r_stride.len();
@@ -139,7 +133,8 @@ impl LayerNorm {
             if r_stride[r_rank - 1] != 1 {
                 candle::bail!("the last dim of r must be contiguous {r_stride:?}")
             }
-            *r.device_ptr() as *const std::ffi::c_void
+            let (r_ptr, _sync) = r_slice.device_ptr(r_slice.stream());
+            r_ptr as *const std::ffi::c_void
         } else {
             ptr::null() as *const std::ffi::c_void
         };
@@ -148,25 +143,39 @@ impl LayerNorm {
         // so out has the same shape as inp * 2
         let out_shape = Shape::from((rows * 2, cols));
 
-        let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }.w()?;
+        let out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
         let dst = out.slice(..rows * cols);
         let dst_add = out.slice(rows * cols..);
 
         // Alloc internal buffers
-        let mu = unsafe { dev.alloc::<f32>(rows) }.w()?;
-        let rsigma = unsafe { dev.alloc::<f32>(rows) }.w()?;
+        let mu = unsafe { dev.alloc::<f32>(rows) }?;
+        let rsigma = unsafe { dev.alloc::<f32>(rows) }?;
 
         // Get cuda device pointers from cuda slices
-        let x_ptr = *x.device_ptr() as *const core::ffi::c_void;
-        let g_ptr = *g.device_ptr() as *const core::ffi::c_void;
-        let dst_add_ptr = *dst_add.device_ptr() as *const core::ffi::c_void;
-        let dst_ptr = *dst.device_ptr() as *const core::ffi::c_void;
-        let mu_ptr = *mu.device_ptr() as *const core::ffi::c_void;
-        let rsigma_ptr = *rsigma.device_ptr() as *const core::ffi::c_void;
+        // Extract pointers in a scope so the SyncOnDrop guards are dropped before we move `out`
+        let (x_ptr, g_ptr, dst_add_ptr, dst_ptr, mu_ptr, rsigma_ptr) = {
+            let (x_ptr, _sync_x) = x_slice.device_ptr(x_slice.stream());
+            let (g_ptr, _sync_g) = g_slice.device_ptr(g_slice.stream());
+            let (dst_add_ptr, _sync_dst_add) = dst_add.device_ptr(dst_add.stream());
+            let (dst_ptr, _sync_dst) = dst.device_ptr(dst.stream());
+            let (mu_ptr, _sync_mu) = mu.device_ptr(mu.stream());
+            let (rsigma_ptr, _sync_rsigma) = rsigma.device_ptr(rsigma.stream());
 
-        let multi_processors_count = dev
+            (
+                x_ptr as *const core::ffi::c_void,
+                g_ptr as *const core::ffi::c_void,
+                dst_add_ptr as *const core::ffi::c_void,
+                dst_ptr as *const core::ffi::c_void,
+                mu_ptr as *const core::ffi::c_void,
+                rsigma_ptr as *const core::ffi::c_void,
+            )
+        };
+
+        // Get the CUDA context from one of the slices to query attributes
+        let ctx = x_slice.context();
+        let multi_processors_count = ctx
             .attribute(CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
-            .unwrap();
+            .map_err(candle::Error::wrap)?;
 
         unsafe {
             // Launch Kernel
