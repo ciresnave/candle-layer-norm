@@ -150,6 +150,10 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rustc-link-lib=layernorm");
     println!("cargo:rustc-link-lib=dylib=cudart");
+    
+    // On non-Windows platforms, link against stdc++
+    // On Windows with MSVC, the C++ standard library is handled automatically by the compiler
+    #[cfg(not(target_os = "windows"))]
     println!("cargo:rustc-link-lib=dylib=stdc++");
 
     Ok(())
