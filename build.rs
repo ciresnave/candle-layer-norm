@@ -101,6 +101,9 @@ fn main() -> Result<()> {
                     .arg("--expt-extended-lambda")
                     .arg("--use_fast_math")
                     .arg("--verbose");
+                if cfg!(windows) {
+                    command.arg("-Xcompiler").arg("/bigobj");
+                }
                 if let Ok(ccbin_path) = &ccbin_env {
                     command
                         .arg("-allow-unsupported-compiler")
@@ -144,7 +147,9 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rustc-link-lib=layernorm");
     println!("cargo:rustc-link-lib=dylib=cudart");
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    if !cfg!(target_env = "msvc") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
 
     Ok(())
 }
