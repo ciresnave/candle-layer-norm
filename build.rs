@@ -153,7 +153,8 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rustc-link-lib=layernorm");
     println!("cargo:rustc-link-lib=dylib=cudart");
-    if !cfg!(target_env = "msvc") {
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
+    if target_env.as_deref() != Some("msvc") {
         println!("cargo:rustc-link-lib=dylib=stdc++");
     }
 
