@@ -2,6 +2,7 @@
 name = "candle-layer-norm"
 version = "0.0.3"
 edition = "2024"
+rust-version = "1.85"
 license = "bsd-3"
 description = "Layer Norm layer for the candle ML framework."
 
