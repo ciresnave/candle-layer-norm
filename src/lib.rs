@@ -91,51 +91,48 @@ impl LayerNorm {
 
         let is_rms_norm = if self.is_rms_norm { 1 } else { 0 };
 
-        // If beta is et, get ids device pointer
-        let b_ptr = if let Some(beta) = &self.beta {
-            // Make sure that beta is a CUDA tensor and get the underlying storage
-            let (b, b_l) = beta.storage_and_layout();
-            let b = match &*b {
-                Storage::Cuda(b) => b,
-                _ => candle::bail!("gamma must be a cuda tensor"),
+        // If beta is set, hold the storage lock and validate layout.
+        // device_ptr is deferred to the kernel-launch scope so the SyncOnDrop guard
+        // stays alive through run_ln.
+        let b_storage_and_layout = self.beta.as_ref().map(|beta| beta.storage_and_layout());
+        let b_cuda: Option<&candle::CudaStorage> =
+            if let Some((ref b_guard, ref b_l)) = b_storage_and_layout {
+                let b = match &**b_guard {
+                    Storage::Cuda(b) => b,
+                    _ => candle::bail!("gamma must be a cuda tensor"),
+                };
+                let _b_slice = b.as_cuda_slice::<T>()?;
+                let b_stride = b_l.stride();
+                let b_rank = b_stride.len();
+                if b_stride[b_rank - 1] != 1 {
+                    candle::bail!("the last dim of b must be contiguous {b_stride:?}")
+                }
+                Some(b)
+            } else {
+                None
             };
 
-            let b_slice = b.as_cuda_slice::<T>()?;
-
-            let b_stride = b_l.stride();
-            let b_rank = b_stride.len();
-
-            if b_stride[b_rank - 1] != 1 {
-                candle::bail!("the last dim of b must be contiguous {b_stride:?}")
-            }
-            b.device_ptr(&stream).0 as *const core::ffi::c_void
-        } else {
-            ptr::null() as *const std::ffi::c_void
-        };
-
-        // If residual is set, get its device pointer
-        let r_ptr = if let (Some(r), Some(r_l)) = (r, r_l) {
+        // If residual is set, validate layout.
+        // device_ptr is deferred to the kernel-launch scope so the SyncOnDrop guard
+        // stays alive through run_ln.
+        let r_cuda: Option<&candle::CudaStorage> = if let (Some(r), Some(r_l)) = (r, r_l) {
             // Check shape
             let expected_shape = x_l.shape().dims2()?;
             if r_l.shape().dims2()? != expected_shape {
                 candle::bail!("shape mismatch x {:?} and r {:?}", x_l.shape(), r_l.shape());
             }
-
-            let r_slice = r.as_cuda_slice::<T>()?;
-
+            let _r_slice = r.as_cuda_slice::<T>()?;
             let r_stride = r_l.stride();
             let r_rank = r_stride.len();
-
             if r_rank != 2 {
                 candle::bail!("layer-norm expects input tensors of rank 2. Found: {r_rank}")
             }
-
             if r_stride[r_rank - 1] != 1 {
                 candle::bail!("the last dim of r must be contiguous {r_stride:?}")
             }
-            r.device_ptr(&stream).0 as *const std::ffi::c_void
+            Some(r)
         } else {
-            ptr::null() as *const std::ffi::c_void
+            None
         };
 
         // We will store the results of the residual add next to the main results
@@ -171,6 +168,20 @@ impl LayerNorm {
             let mu_ptr = mu_ptr as *const core::ffi::c_void;
             let (rsigma_ptr, _rsigma_sync) = rsigma.device_ptr(&stream);
             let rsigma_ptr = rsigma_ptr as *const core::ffi::c_void;
+
+            // Acquire b_ptr and r_ptr with sync guards kept alive through the kernel launch
+            let (b_ptr, _b_sync): (*const core::ffi::c_void, Option<_>) = if let Some(b) = b_cuda {
+                let (ptr, guard) = b.device_ptr(&stream);
+                (ptr as *const core::ffi::c_void, Some(guard))
+            } else {
+                (ptr::null(), None)
+            };
+            let (r_ptr, _r_sync): (*const core::ffi::c_void, Option<_>) = if let Some(r) = r_cuda {
+                let (ptr, guard) = r.device_ptr(&stream);
+                (ptr as *const core::ffi::c_void, Some(guard))
+            } else {
+                (ptr::null(), None)
+            };
 
             unsafe {
                 // Launch Kernel
