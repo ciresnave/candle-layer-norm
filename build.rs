@@ -101,6 +101,9 @@ fn main() -> Result<()> {
                     .arg("--expt-extended-lambda")
                     .arg("--use_fast_math")
                     .arg("--verbose");
+                if cfg!(windows) {
+                    command.arg("-Xcompiler").arg("/bigobj");
+                }
                 if let Ok(ccbin_path) = &ccbin_env {
                     command
                         .arg("-allow-unsupported-compiler")
@@ -150,11 +153,10 @@ fn main() -> Result<()> {
     println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rustc-link-lib=layernorm");
     println!("cargo:rustc-link-lib=dylib=cudart");
-    
-    // On non-Windows platforms, link against stdc++
-    // On Windows with MSVC, the C++ standard library is handled automatically by the compiler
-    #[cfg(not(target_os = "windows"))]
-    println!("cargo:rustc-link-lib=dylib=stdc++");
+    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
+    if target_env.as_deref() != Some("msvc") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
 
     Ok(())
 }
