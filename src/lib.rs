@@ -2,8 +2,7 @@ mod ffi;
 
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT;
-use candle::cuda_backend::cudarc::driver::DevicePtr;
-use candle::cuda_backend::WrapErr;
+use candle::cuda_backend::cudarc::driver::{DevicePtr, DeviceSlice};
 use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use half::{bf16, f16};
 use std::ptr;
@@ -54,12 +53,8 @@ impl LayerNorm {
         };
 
         // Get cuda slices for all tensors
-        let x = x.as_cuda_slice::<T>()?;
-        let g = g.as_cuda_slice::<T>()?;
-
-        // Get cuda views for all tensors
-        let x = x.slice(x_l.start_offset()..);
-        let g = g.slice(g_l.start_offset()..);
+        let x_slice = x.as_cuda_slice::<T>()?;
+        let g_slice = g.as_cuda_slice::<T>()?;
 
         // Input matrix layout
         let rows = x_l.dims()[0];
@@ -105,8 +100,7 @@ impl LayerNorm {
                 _ => candle::bail!("gamma must be a cuda tensor"),
             };
 
-            let b = b.as_cuda_slice::<T>()?;
-            let b = b.slice(b_l.start_offset()..);
+            let b_slice = b.as_cuda_slice::<T>()?;
 
             let b_stride = b_l.stride();
             let b_rank = b_stride.len();
@@ -127,8 +121,7 @@ impl LayerNorm {
                 candle::bail!("shape mismatch x {:?} and r {:?}", x_l.shape(), r_l.shape());
             }
 
-            let r = r.as_cuda_slice::<T>()?;
-            let r = r.slice(r_l.start_offset()..);
+            let r_slice = r.as_cuda_slice::<T>()?;
 
             let r_stride = r_l.stride();
             let r_rank = r_stride.len();
